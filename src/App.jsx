@@ -69,6 +69,7 @@ export default function App() {
   const {
     speak,
     stop,
+    stopPlayback,
     togglePause,
     primePlaybackFromGesture,
     prefetchNarration,
@@ -141,9 +142,9 @@ export default function App() {
     const narration = currentScene.narration.trim()
     speak(narration)
     return () => {
-      stop()
+      stopPlayback()
     }
-  }, [phase, currentScene?.narration, loading, speak, stop, iosSpeechGestureOnly])
+  }, [phase, currentScene?.narration, loading, speak, stopPlayback, iosSpeechGestureOnly])
 
   const choiceHistoryKey = useMemo(() => choiceHistory.join('\u0001'), [choiceHistory])
 
@@ -249,10 +250,8 @@ export default function App() {
         choiceHistory: [],
         establishedIllustrationCast: {},
       })
-      if (iosSpeechGestureOnly) {
-        const n = typeof scene?.narration === 'string' ? scene.narration.trim() : ''
-        if (n) prefetchNarration(n)
-      }
+      const n = typeof scene?.narration === 'string' ? scene.narration.trim() : ''
+      if (n) prefetchNarration(n)
       setStoryPages([
         {
           choiceHistory: [],
@@ -266,7 +265,7 @@ export default function App() {
     } finally {
       setLoading(false)
     }
-  }, [genre, heroGender, resolvedHero, iosSpeechGestureOnly, prefetchNarration, stop, primePlaybackFromGesture])
+  }, [genre, heroGender, resolvedHero, prefetchNarration, stop, primePlaybackFromGesture])
 
   const choose = useCallback(
     async (label) => {
@@ -300,10 +299,8 @@ export default function App() {
           establishedIllustrationCast: castBase,
           priorSceneNarrations,
         })
-        if (iosSpeechGestureOnly) {
-          const n = typeof scene?.narration === 'string' ? scene.narration.trim() : ''
-          if (n) prefetchNarration(n)
-        }
+        const n = typeof scene?.narration === 'string' ? scene.narration.trim() : ''
+        if (n) prefetchNarration(n)
         setStoryPages([
           ...truncated,
           {

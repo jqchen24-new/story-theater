@@ -111,6 +111,10 @@ export function useNarrator() {
   const prefetchAbortRef = useRef(null)
   /** Avoid aborting an in-flight `/api/tts` when the same narration is prefetched twice (e.g. after fetch + effect). */
   const prefetchInFlightKeyRef = useRef(/** @type {string | null} */ (null))
+  /** Resolves when the in-flight prefetch for a narration key finishes (success or failure). */
+  const prefetchRunRef = useRef(/** @type {{ key: string, promise: Promise<void> } | null} */ (null))
+  /** Played once from a user gesture to unlock programmatic playback on desktop browsers. */
+  const autoplayUnlockAudioRef = useRef(/** @type {HTMLAudioElement | null} */ (null))
   const speakGenRef = useRef(0)
   /** Sentence spans for whichever text is currently being read aloud. */
   const sentencesRef = useRef(
@@ -153,7 +157,8 @@ export function useNarrator() {
     bufferSourceRef.current = null
   }, [])
 
-  const cleanupAudio = useCallback(() => {
+  /** Stop current playback without suspending Web Audio (keeps desktop autoplay unlocked). */
+  const stopPlayback = useCallback(() => {
     if (speechDelayTimerRef.current) {
       clearTimeout(speechDelayTimerRef.current)
       speechDelayTimerRef.current = 0
@@ -165,10 +170,6 @@ export function useNarrator() {
     pauseAllTtsPlayback()
     if (typeof window !== 'undefined' && window.speechSynthesis) {
       window.speechSynthesis.cancel()
-    }
-    const ctx = audioContextRef.current
-    if (ctx && ctx.state === 'running') {
-      void ctx.suspend()
     }
     if (audioRef.current) {
       const audio = audioRef.current
@@ -192,6 +193,10 @@ export function useNarrator() {
     }
   }, [cancelSentenceTracking, stopAllBufferSources])
 
+  const cleanupAudio = useCallback(() => {
+    stopPlayback()
+  }, [stopPlayback])
+
   /** Call synchronously from pointer/tap handlers so neural audio can play after async fetch. */
   const primePlaybackFromGesture = useCallback(() => {
     if (typeof window === 'undefined') return
@@ -208,6 +213,20 @@ export function useNarrator() {
     } catch {
       /* ignore */
     }
+    try {
+      if (!autoplayUnlockAudioRef.current) {
+        const el = new Audio(
+          'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA',
+        )
+        el.setAttribute('playsinline', '')
+        autoplayUnlockAudioRef.current = el
+      }
+      const unlock = autoplayUnlockAudioRef.current
+      unlock.volume = 0.001
+      void unlock.play().catch(() => {})
+    } catch {
+      /* ignore */
+    }
   }, [])
 
   const stop = useCallback(() => {
@@ -215,11 +234,12 @@ export function useNarrator() {
     prefetchAbortRef.current?.abort()
     prefetchAbortRef.current = null
     prefetchInFlightKeyRef.current = null
+    prefetchRunRef.current = null
     prefetchedRef.current = null
-    cleanupAudio()
+    stopPlayback()
     setStatus('idle')
     setActiveSentenceIndex(-1)
-  }, [cleanupAudio])
+  }, [stopPlayback])
 
   /** Warm `/api/tts` while the user reads (iOS has no auto-speak). */
   const prefetchNarration = useCallback((text) => {
@@ -250,7 +270,7 @@ export function useNarrator() {
     const ac = new AbortController()
     prefetchAbortRef.current = ac
 
-    void (async () => {
+    const run = async () => {
       try {
         const hit = getTtsNeuralCache(t)
         if (hit?.ab?.byteLength >= 64) {
@@ -275,11 +295,17 @@ export function useNarrator() {
         if (prefetchInFlightKeyRef.current === t) {
           prefetchInFlightKeyRef.current = null
         }
+        if (prefetchRunRef.current?.key === t) {
+          prefetchRunRef.current = null
+        }
         if (prefetchAbortRef.current === ac) {
           prefetchAbortRef.current = null
         }
       }
-    })()
+    }
+
+    const promise = run()
+    prefetchRunRef.current = { key: t, promise }
   }, [])
 
   /** Prime voice list for Web Speech fallback. */
@@ -302,10 +328,26 @@ export function useNarrator() {
 
       const myGen = ++speakGenRef.current
 
-      prefetchAbortRef.current?.abort()
-      prefetchAbortRef.current = null
+      if (!iosSpeechGestureOnly) {
+        primePlaybackFromGesture()
+      }
 
-      cleanupAudio()
+      const prefetchRun = prefetchRunRef.current
+      const prefetchingSame = prefetchInFlightKeyRef.current === t
+      if (prefetchingSame && prefetchRun?.key === t) {
+        try {
+          await prefetchRun.promise
+        } catch {
+          /* ignore */
+        }
+      } else {
+        prefetchAbortRef.current?.abort()
+        prefetchAbortRef.current = null
+        prefetchInFlightKeyRef.current = null
+        prefetchRunRef.current = null
+      }
+
+      stopPlayback()
       let synthNeedsDelay = false
       if (window.speechSynthesis) {
         const synth = window.speechSynthesis
@@ -317,9 +359,6 @@ export function useNarrator() {
       setActiveSentenceIndex(-1)
       const replayCached = hasTtsNeuralCache(t)
       const quotaPaused = isNeuralTtsQuotaPaused()
-      if (replayCached) {
-        primePlaybackFromGesture()
-      }
       setStatus(replayCached ? 'playing' : 'loading')
 
       const bindHtmlAudioPlayback = (audio) => {
@@ -638,9 +677,9 @@ export function useNarrator() {
     },
     [
       cancelSentenceTracking,
-      cleanupAudio,
       iosSpeechGestureOnly,
       stopAllBufferSources,
+      stopPlayback,
       updateActiveFromCharPos,
       updateActiveFromRatio,
       primePlaybackFromGesture,
@@ -713,6 +752,7 @@ export function useNarrator() {
   return {
     speak,
     stop,
+    stopPlayback,
     togglePause,
     primePlaybackFromGesture,
     prefetchNarration,
